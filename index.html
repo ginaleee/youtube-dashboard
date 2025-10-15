@@ -82,28 +82,47 @@ const CONFIG = {
 
 /** ==== 1) 구글 OAuth 로그인 & 채널 목록 ==== **/
 let authed = false;
+
 document.getElementById('googleAuthBtn').onclick = async () => {
   try {
     document.getElementById('status').textContent = '구글 로그인 중...';
-    const res = await fetch(`${CONFIG.YT_PROXY_URL}/login`, {method:'POST'});
+
+    // Request the Google OAuth login URL from your backend
+    const res = await fetch(`${CONFIG.YT_PROXY_URL}/login`, { method: 'POST' });
     const j = await res.json();
-    if (j.ok){ authed = true; document.getElementById('status').textContent = '로그인 성공'; loadChannels(); }
-    else throw new Error(j.error||'login failed');
-  } catch(e){ document.getElementById('status').textContent = '로그인 오류: '+e.message; }
+
+    console.log("OAuth URL from server:", j.url);
+
+    if (j.url) {
+      // ✅ Redirect user to Google's consent page
+      window.location.href = j.url;
+    } else {
+      throw new Error(j.error || 'login failed: no OAuth URL received');
+    }
+
+  } catch (e) {
+    console.error('Login error:', e);
+    document.getElementById('status').textContent = '로그인 오류: ' + e.message;
+  }
 };
 
-async function loadChannels(){
+async function loadChannels() {
   const sel = document.getElementById('channelSelect');
   sel.innerHTML = '';
+
   const res = await fetch(`${CONFIG.YT_PROXY_URL}/channels`);
-  const {items=[]} = await res.json();
-  items.forEach(c=>{
+  const { items = [] } = await res.json();
+
+  items.forEach(c => {
     const opt = document.createElement('option');
-    opt.value = c.id; opt.textContent = c.title;
+    opt.value = c.id;
+    opt.textContent = c.title;
     sel.appendChild(opt);
   });
-  document.getElementById('fetchBtn').disabled = items.length===0;
+
+  document.getElementById('fetchBtn').disabled = items.length === 0;
 }
+
 
 /** ==== 2) 기간 선택 보조 ==== **/
 function getRange(){
