@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>YouTube Multi-Channel Reports</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;margin:0;background:#0b0f14;color:#e6edf3}
+  header,footer{padding:16px 20px;background:#111826}
+  main{padding:20px;max-width:1100px;margin:0 auto}
+  .card{background:#0f1722;border:1px solid #1f2a3a;border-radius:12px;padding:16px;margin:12px 0}
+  label{display:block;margin:8px 0 4px}
+  select,input{padding:10px;border-radius:8px;border:1px solid #2a3a53;background:#0b1220;color:#e6edf3}
+  button{padding:10px 14px;border-radius:10px;border:0;background:#6aa1ff;color:#071120;font-weight:700;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .grow{flex:1}
+  #report section{margin:22px 0;padding-bottom:16px;border-bottom:1px dashed #24334a}
+  .muted{color:#9ab}
+  .small{font-size:12px}
+  .right{float:right}
+  @media print { header,.controls{display:none} body{background:#fff;color:#000} .card{border:0} }
+</style>
+</head>
+<body>
+<header>
+  <strong>📊 YouTube Report Builder</strong>
+</header>
+
+<main>
+  <div class="card controls">
+    <div class="row">
+      <div class="grow">
+        <label>채널 선택 (복수 가능)</label>
+        <select id="channelSelect" multiple size="4" class="grow"></select>
+        <div class="small muted">* 구글 로그인 후 내 채널 목록이 보입니다.</div>
+      </div>
+      <div>
+        <label>기간 유형</label>
+        <select id="periodType">
+          <option value="weekly">주간</option>
+          <option value="monthly" selected>월간</option>
+          <option value="custom">커스텀</option>
+        </select>
+        <label>시작</label><input type="date" id="startDate">
+        <label>종료</label><input type="date" id="endDate">
+      </div>
+      <div>
+        <label>목표</label>
+        <select id="goal">
+          <option value="subs">구독자 성장</option>
+          <option value="watch">시청시간 증가</option>
+          <option value="affiliate">어필리에이트 전환</option>
+        </select>
+        <label>시즌</label><input id="seasonal" placeholder="Black Friday 등">
+      </div>
+    </div>
+    <div class="row">
+      <button id="googleAuthBtn">① Google 로그인</button>
+      <button id="fetchBtn" disabled>② 데이터 불러오기</button>
+      <button id="buildBtn" disabled>③ 보고서 생성 (ChatGPT)</button>
+      <button onclick="window.print()">PDF로 저장/인쇄</button>
+    </div>
+    <div id="status" class="small muted"></div>
+  </div>
+
+  <div id="report" class="card">
+    <em class="muted">여기에 보고서가 생성됩니다.</em>
+  </div>
+</main>
+
+<footer>
+  <span class="small muted">© Report Builder</span>
+</footer>
+
+<script>
+/** ==== 0) 환경 변수 (실사용 시 백엔드 프록시 추천) ==== **/
+const CONFIG = {
+  OPENAI_PROXY_URL: "/api/openai", // 서버에서 OpenAI로 중계
+  YT_PROXY_URL: "/api/youtube",    // 서버에서 YouTube API로 중계(OAuth 토큰 저장)
+};
+
+/** ==== 1) 구글 OAuth 로그인 & 채널 목록 ==== **/
+let authed = false;
+document.getElementById('googleAuthBtn').onclick = async () => {
+  try {
+    document.getElementById('status').textContent = '구글 로그인 중...';
+    const res = await fetch(`${CONFIG.YT_PROXY_URL}/login`, {method:'POST'});
+    const j = await res.json();
+    if (j.ok){ authed = true; document.getElementById('status').textContent = '로그인 성공'; loadChannels(); }
+    else throw new Error(j.error||'login failed');
+  } catch(e){ document.getElementById('status').textContent = '로그인 오류: '+e.message; }
+};
+
+async function loadChannels(){
+  const sel = document.getElementById('channelSelect');
+  sel.innerHTML = '';
+  const res = await fetch(`${CONFIG.YT_PROXY_URL}/channels`);
+  const {items=[]} = await res.json();
+  items.forEach(c=>{
+    const opt = document.createElement('option');
+    opt.value = c.id; opt.textContent = c.title;
+    sel.appendChild(opt);
+  });
+  document.getElementById('fetchBtn').disabled = items.length===0;
+}
+
+/** ==== 2) 기간 선택 보조 ==== **/
+function getRange(){
+  const type = document.getElementById('periodType').value;
+  let s = document.getElementById('startDate').value;
+  let e = document.getElementById('endDate').value;
+  const today = new Date();
+  if(type==='monthly'){
+    const first = new Date(today.getFullYear(), today.getMonth(), 1);
+    const last  = new Date(today.getFullYear(), today.getMonth()+1, 0);
+    s = s || first.toISOString().slice(0,10);
+    e = e || last.toISOString().slice(0,10);
+  }
+  if(type==='weekly'){
+    const last7 = new Date(today); last7.setDate(today.getDate()-6);
+    s = s || last7.toISOString().slice(0,10);
+    e = e || today.toISOString().slice(0,10);
+  }
+  return {type, start:s, end:e};
+}
+
+/** ==== 3) 채널별 데이터 수집 (예: 통계, 상위 영상, 쇼츠 지표 등) ==== **/
+document.getElementById('fetchBtn').onclick = async () => {
+  const sel = [...document.getElementById('channelSelect').selectedOptions].map(o=>o.value);
+  if(sel.length===0){ alert('채널을 선택하세요'); return; }
+  const range = getRange();
+  document.getElementById('status').textContent = '데이터 수집 중...';
+
+  // 백엔드에서 YouTube API 호출하여 표준화된 JSON으로 반환하도록 구현
+  const res = await fetch(`${CONFIG.YT_PROXY_URL}/report`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({channelIds: sel, range})
+  });
+  const channelsJson = await res.json(); // 위에서 준 CHANNELS_JSON 형식으로 돌아오게
+  window.__YT_DATA__ = channelsJson;
+  document.getElementById('status').textContent = '데이터 수집 완료';
+  document.getElementById('buildBtn').disabled = false;
+};
+
+/** ==== 4) OpenAI에 프롬프트 전송 → HTML 보고서 수신 ==== **/
+document.getElementById('buildBtn').onclick = async () => {
+  const range = getRange();
+  const payload = {
+    system: `
+You are a senior YouTube growth strategist and analytics consultant.
+You receive structured JSON metrics from 4 YouTube channels and produce:
+(1) A period review (clarity-first, actionable),
+(2) Next-period strategy (titles, thumbnails, schedule),
+(3) Benchmark videos/channels with reasons),
+(4) Keyword/hashtag ideas,
+(5) 5-line executive checklist,
+(6) Render-ready HTML sections with minimal CSS classes.
+
+Constraints:
+- Be concise, data-driven, and avoid fluff.
+- Emphasize deltas vs previous period when provided.
+- If metrics are sparse, state assumptions and give a lightweight plan.
+- Output MUST be a single HTML string with <section> blocks and an <aside> summary.
+- Include a final <footer> with “Generated by ChatGPT”.
+`,
+
+    user: `
+Generate a YouTube multi-channel report.
+
+Period:
+- type: ${range.type}
+- range: ${range.start} to ${range.end}
+- timezone: America/Los_Angeles
+
+Business goals:
+- focus: ${document.getElementById('goal').value}
+- seasonal: ${document.getElementById('seasonal').value || 'none'}
+
+Channels JSON:
+${JSON.stringify(window.__YT_DATA__ || {channels:[]})}
+`
+  };
+  document.getElementById('status').textContent = 'ChatGPT가 보고서를 생성 중...';
+  const res = await fetch(CONFIG.OPENAI_PROXY_URL, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const {html} = await res.json(); // 서버가 model 응답에서 HTML만 추출해 {html}로 리턴
+  document.getElementById('report').innerHTML = html || '<p>생성 실패</p>';
+  document.getElementById('status').textContent = '완료';
+};
+</script>
+</body>
+</html>
